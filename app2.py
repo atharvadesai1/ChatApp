@@ -4,8 +4,10 @@ from PIL import Image
 import numpy as np
 from streamlit_option_menu import option_menu
 import re
+import numpy as np
 import base64
 from fpdf import FPDF
+from tensorflow.keras.models import load_model
 
 import mysql.connector
 
@@ -13,18 +15,17 @@ import mysql.connector
 try:
     mydb = mysql.connector.connect(
         host="localhost",
-        user="",
-        password="",
-        database="Alzheimers"
+        port=3306,
+        user="root",
+        password="Cztmsr7sed#",
+        database="alzheimers"
     )
     print("Database connection successful")
 except mysql.connector.Error as err:
     print("Error connecting to database:", err)
     exit(1)
 # Get a cursor object to execute SQL queries
-mycursor = mydb.cursor()
-
-
+mycursor = mydb.cursor() 
 
 
 st.markdown("""
@@ -52,14 +53,31 @@ def set_background(png_file):
     </style>
     ''' % bin_str
     st.markdown(page_bg_img, unsafe_allow_html=True)
-set_background('./images/bg3.png')
+set_background('./images/normal2.avif')
 
 # Load the saved model
-model = tf.keras.models.load_model('model.h5')
+# model = tf.keras.models.load_model('model.h5')
+
+
+model = load_model('model.h5', compile=False)
+model.save('converted_model.h5')
+model = load_model('converted_model.h5')
+
+
+
+mymodel = load_model('lungs_results.h5', compile=False)
+# mymodel.save('converted_mymodel.h5')
+# mymodel = load_model('converted_mymodel.h5')
+brain = 'Brain'
+mri = 'MRI'
+lungs = 'Lungs'
+xray = 'X-Ray'
+
+
 
 # Define the class labels
-class_labels = ['Mild Demented', 'Moderate Demented',
-                'Non Demented', 'Very Mild Demented']
+class_labels = ['NonDemented', 'VeryMildDemented', 'MildDemented', 'ModerateDemented']
+class_labels_lungs = ['Bacterial Pneumonia', 'Corona Virus Disease', 'Normal', 'Tuberculosis', 'Viral Pneumonia']
 
 # Define the function to preprocess the image
 
@@ -71,6 +89,14 @@ def preprocess_image(image):
     image = image / 255.0
     image = np.expand_dims(image, axis=0)
     return image
+
+def preprocess_image_lungs(image):
+    image = image.convert('RGB')  # Ensure 3 channels (RGB)
+    image = image.resize((380, 380))  # Resize to required dimensions
+    image = np.array(image, dtype=np.float32)  # Convert to NumPy array
+    image = np.expand_dims(image, axis=0)  # Add batch dimension
+    image = image / 255.0  # Normalize pixel values
+    return image  # Shape: (1, 380, 380, 3)
 
 # Define the Streamlit app
 
@@ -108,7 +134,7 @@ def validate_input(name, age,contact,file):
 #with st.sidebar:
 selected = option_menu(
             menu_title=None,  # required
-            options=["Home", "Alzhiemer Detection", "About US"],  # required
+            options=["Home", "Alzhiemer Detection", "Lungs Disease Detection", "About US"],  # required
             icons=["house", "book", "envelope"],  # optional
             menu_icon="cast",  # optional
             default_index=0,  # optional
@@ -124,11 +150,152 @@ if selected =='Home':
      st.write("3. Moderate Demented")
      st.write("4. Non Demented")
 
+if selected == 'Lungs Disease Detection':
+    def app():
+        st.title('Lungs Disease Detection Web App')
+        st.write("You can upload an X-ray image of your lungs to analyze and predict the most probable disease type:")
+        st.write('1. Bacterial Pneumonia')
+        st.write("2. Corona Virus Disease")
+        st.write("3. Normal")
+        st.write("4. Tuberculosis")
+        st.write("5. Viral Pneumonia")
+
+        with st.form(key='myform', clear_on_submit=True):
+            name = st.text_input('Name')
+            age = st.number_input('Age', min_value=1, max_value=150)
+            gender = st.radio('Gender', ('Male', 'Female','Other'))
+            contact = st.text_input('Contact Number', value='', key='contact')
+
+            file = st.file_uploader('Upload an image', type=['jpg', 'jpeg', 'png'])
+            submit=st.form_submit_button("Submit")
+
+        def insert_data(name, age, gender, contact, organ, diagnosis_type, prediction):
+            try:
+                sql = "INSERT INTO predictions (Name, Age, Gender, Contact, Organ, Diagnosis_type, Prediction) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                val = (name, age, gender, contact, organ, diagnosis_type, prediction)
+                mycursor.execute(sql, val)
+                mydb.commit()
+                print(mycursor.rowcount, "record inserted")
+            except mysql.connector.Error as err:
+                print("Error inserting record:", err)
+
+        if file is not None and validate_input(name, age,contact,file) and validate_phone_number(contact) and validate_name(name):
+            st.success('Your personal information has been recorded.', icon="✅")
+            image = Image.open(file)
+            png_image = image.convert('RGBA')
+            st.image(image, caption='Uploaded Image', width=200)
+            # Use the fields for name, age, contact, and gender in the output
+
+            st.write('Name:', name)
+            st.write('Age:', age)
+            st.write('Gender:', gender)
+            st.write('Contact:', contact)
+            image = preprocess_image_lungs(image)
+            predictions = mymodel.predict(image)
+            predictions = np.argmax(predictions)
+            print("Predictions: ", predictions)
+
+            if predictions >= 0:
+                print("Class Labels: ", class_labels_lungs)
+                predicted_class = class_labels_lungs[predictions]
+                st.success(f'The predicted class is: {predicted_class}')
+            else:
+                st.error("Prediction failed: No output from model.")
+
+            
+            result_str = 'Name: {}\nAge: {}\nGender: {}\nContact: {}\nPrediction for Lungs Disease: {}'.format(
+                name, age, gender, contact, class_labels_lungs[predictions])
+            insert_data(name, age, gender, contact, lungs, xray, class_labels_lungs[predictions])
+            export_as_pdf = st.button("Export Report")
+
+            def create_download_link(val, filename):
+                b64 = base64.b64encode(val)  # val looks like b'...'
+                return f'<a href="data:application/octet-stream;base64,{b64.decode()}" download="{filename}.pdf">Download file</a>'
+
+            if export_as_pdf:
+                pdf = FPDF()
+                pdf.add_page()
+                # set the border style
+                pdf.set_draw_color(0, 0, 0)
+                pdf.set_line_width(1)
+
+                # add a border to the entire page
+                pdf.rect(5.0, 5.0, 200.0, 287.0, 'D')
+
+                # Set font for title
+                pdf.set_font('Times', 'B', 24)
+                pdf.cell(200, 20, 'Lungs Disease Report', 0, 1, 'C')
+
+                # Set font for section headers
+                pdf.set_font('Arial', 'B', 16)
+                pdf.cell(200, 10, 'Patient Details', 0, 1)
+
+                # Set font for regular text
+                pdf.set_font('Arial', '', 12)
+                pdf.cell(200, 10, f'Name: {name}', 0, 1)
+                pdf.cell(200, 10, f'Age: {age}', 0, 1)
+                pdf.cell(200, 10, f'Gender: {gender}', 0, 1)
+                pdf.cell(200, 10, f'Contact: {contact}', 0, 1)
+                pdf.ln(0.15)
+                pdf.ln(0.15)
+
+
+
+                # Add the image to the PDF object's images dictionary
+                png_file = "image.png"
+                png_image.save(png_file, "PNG")
+                pdf.cell(200, 10, 'X-Ray report:', 0, 1)
+                pdf.image(png_file, x=40, y=80, w=50,h=50)
+                pdf.ln(0.15)
+                pdf.ln(10.0)
+                pdf.ln(10.0)
+                pdf.ln(10.15)
+                pdf.ln(10.15)
+                pdf.ln(1.15)
+                pdf.ln(1.15)
+                pdf.ln(1.15)
+
+                # Set font for prediction text
+                pdf.set_font('Arial', 'B', 16)
+                pdf.cell(200, 10, f'Prediction for Lungs Disease: {class_labels_lungs[predictions]}', 0, 1)
+                pdf.ln(2.0)
+                pdf.set_font('Arial', 'B', 12)
+                if (predictions!=3):
+                    pdf.set_text_color(255, 0, 0)
+                    pdf.cell(200, 10, 'Lung disease detected in your scan, kindly consult a pulmonologist immediately!', 0, 1)
+                    pdf.set_text_color(0, 0, 255)
+                    pdf.set_font('Arial', 'B', 10)
+                    pdf.cell(200, 10, 'Here are some precautions you can take:', 0, 1, 'C')
+                    pdf.ln(2)
+
+                    precautions = [
+                        '1. Avoid smoking and pollutants: Stay away from smoking, secondhand smoke, and environmental pollutants to protect lung health.',
+                        '2. Maintain good hygiene: Wash hands regularly and avoid crowded places to reduce the risk of infections affecting the lungs.',
+                        '3. Follow prescribed medications: Take medications as directed by the doctor to manage symptoms and prevent complications.',
+                        '4. Practice breathing exercises: Engage in lung-strengthening exercises like pursed-lip breathing and diaphragmatic breathing to improve lung function.',
+                        '5. Stay physically active: Perform light exercises or pulmonary rehabilitation as recommended to keep the lungs functioning optimally.'
+                    ]
+
+
+                    pdf.set_font('Arial', '', 12)
+
+                    for precaution in precautions:
+                        pdf.multi_cell(190, 10, precaution, 0, 1, 'L')
+                        pdf.ln(1)
+    
+                else:
+                    pdf.set_text_color(0, 255, 0)
+                    pdf.cell(200,10,'Congratulations! There is no sign of lungs disease in your X-Ray report.',0,1)
+
+                # Create and display the download link
+                html = create_download_link(pdf.output(dest="S").encode("latin-1"), "test")
+                st.markdown(html, unsafe_allow_html=True)
+       
+
 if selected =='About US':
     def app():
         st.title('Welcome!')
         st.write('This web app uses a CNN model to recognize the presence of Alzheimer diasease in any age group. Leaving behind the traditional method of MRI Scans you can now get yourself checked through our protable web APP and you can get your report within no time.')
-        st.write('This web app is a MINi Project made by Shubham Shinde')
 
 if selected=='Alzhiemer Detection':
   def app():
@@ -138,7 +305,8 @@ if selected=='Alzhiemer Detection':
     # Add fields for name, age, contact, and gender
     with st.form(key='myform', clear_on_submit=True):
         name = st.text_input('Name')
-        age = st.number_input('Age', min_value=1, max_value=150, value=40)
+        age = st.number_input('Age', min_value=1, max_value=150
+        )
         gender = st.radio('Gender', ('Male', 'Female','Other'))
         contact = st.text_input('Contact Number', value='', key='contact')
 
@@ -146,10 +314,10 @@ if selected=='Alzhiemer Detection':
         submit=st.form_submit_button("Submit")
 
         # Define a function to insert the form data into the `prediction` table
-    def insert_data(name, age, gender, contact, prediction):
+    def insert_data(name, age, gender, contact, organ, diagnosis_type, prediction):
         try:
-          sql = "INSERT INTO predictions (Patient_Name, Age, Gender, Contact, Prediction) VALUES (%s, %s, %s, %s, %s)"
-          val = (name, age, gender, contact, prediction)
+          sql = "INSERT INTO predictions (Name, Age, Gender, Contact, Organ, Diagnosis_type, Prediction) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+          val = (name, age, gender, contact, organ, diagnosis_type, prediction)
           mycursor.execute(sql, val)
           mydb.commit()
           print(mycursor.rowcount, "record inserted")
@@ -171,10 +339,19 @@ if selected=='Alzhiemer Detection':
                   image = preprocess_image(image)
                   prediction = model.predict(image)
                   prediction = np.argmax(prediction, axis=1)
-                  st.success('The predicted class is: '+ class_labels[prediction[0]])
+                  print("Predictions: ", prediction)
+
+                  if len(prediction) > 0:
+                    print("Class Labels: ", class_labels)
+                    predicted_class = class_labels[prediction[0]-1]
+                    st.success(f'The predicted class is: {predicted_class}')
+                  else:
+                    st.error("Prediction failed: No output from model.")
+
+                  
                   result_str = 'Name: {}\nAge: {}\nGender: {}\nContact: {}\nPrediction for Alzheimer: {}'.format(
-                     name, age, gender, contact, class_labels[prediction[0]])
-                  insert_data(name, age, gender, contact, class_labels[prediction[0]])
+                     name, age, gender, contact, class_labels[prediction[0]-1])
+                  insert_data(name, age, gender, contact, brain, mri, class_labels[prediction[0]-1])
                   export_as_pdf = st.button("Export Report")
 
                   def create_download_link(val, filename):
@@ -226,7 +403,7 @@ if selected=='Alzhiemer Detection':
 
                      # Set font for prediction text
                      pdf.set_font('Arial', 'B', 16)
-                     pdf.cell(200, 10, f'Prediction for Alzheimer: {class_labels[prediction[0]]}', 0, 1)
+                     pdf.cell(200, 10, f'Prediction for Alzheimer: {class_labels[prediction[0]-1]}', 0, 1)
                      pdf.ln(2.0)
                      pdf.set_font('Arial', 'B', 12)
                      if (prediction!=2):
@@ -257,6 +434,8 @@ if selected=='Alzhiemer Detection':
                       # Create and display the download link
                      html = create_download_link(pdf.output(dest="S").encode("latin-1"), "test")
                      st.markdown(html, unsafe_allow_html=True)
+
+        
 
 
 
